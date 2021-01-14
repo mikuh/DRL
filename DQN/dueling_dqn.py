@@ -5,26 +5,28 @@ import gym
 import random
 
 from Agent import Agent
-from Layers import DenseEmbeddingNet, QNet
+from Layers import CNNEmbeddingNet, DenseEmbeddingNet, ValueNet, QNet
 
 
 class DQN(tf.keras.Model):
 
-    def __init__(self, embedding_net: tf.keras.layers.Layer, q_net: tf.keras.layers.Layer):
+    def __init__(self, embedding_net, value_net, q_net):
         super().__init__()
-
         self.embedding_layer = embedding_net
-        self.value_layer = q_net
+        self.state_value = value_net
+        self.q_value = q_net
 
-    def call(self, state):
-        output = self.embedding_layer(state)
-        output = self.value_layer(output)
-        return output
+    def call(self, states):
+        embedding = self.embedding_layer(states)
+        self.v = self.state_value(embedding)
+        self.a = self.q_value(embedding)
+        value = self.v + self.a - tf.math.reduce_mean(self.a)
+        return value
 
 
 class DQNAgent(Agent):
 
-    def __init__(self, env: gym.Env, set_summary=True):
+    def __init__(self, env, set_summary=True):
         super().__init__()
         self.env = env
 
@@ -32,59 +34,34 @@ class DQNAgent(Agent):
         self.gamma = 0.99
         self.epsilon = 0
 
-        self.dqn_net = DQN(embedding_net=DenseEmbeddingNet(),
+        self.dqn_net = DQN(embedding_net=CNNEmbeddingNet(), value_net=ValueNet(),
                            q_net=QNet(env))
-        self.target_net = DQN(embedding_net=DenseEmbeddingNet(),
+        self.target_net = DQN(embedding_net=CNNEmbeddingNet(), value_net=ValueNet(),
                               q_net=QNet(env))
 
         self.opt = tf.keras.optimizers.Adam(self.lr)
 
         self.action_size = self.env.action_space.n
         self.batch_size = 64
-        self.maxlen = 2000
-        self.memory = deque(maxlen=self.maxlen)
+
+        self.memory = deque(maxlen=2000)
 
         self.step = 0
-        self.target_net_update_step = 20
+        self.target_net_update_step = 30
         self.episode = 0
         self.score = 0
         self.set_summary = set_summary
         if set_summary:
-            self.checkpoint_summary_setting("double_dqn", self.opt, self.dqn_net)
+            self.checkpoint_summary_setting("dueling_dqn", self.opt, self.dqn_net)
 
     def get_action(self, state):
-        q_value = self.dqn_net(np.array([state], dtype=np.float32))[0]
 
+        q_value = self.dqn_net(np.array([state], np.float32))[0]
         if np.random.rand() < self.epsilon:
             action = np.random.choice(self.action_size)
         else:
             action = np.argmax(q_value)
         return action
-
-    def collect_transitions(self, start_state):
-        state = start_state
-        while True:
-            self.step += 1
-            self.epsilon = 1 / (self.episode * 0.1 + 10)
-            action = self.get_action(state)
-            next_state, reward, done, _ = self.env.step(action)
-            self.score += reward
-
-            self.memory.append((state, action, reward, next_state, done))
-            state = next_state
-            if done:
-                self.episode += 1
-                print("Episode %s, Score %s." % (self.episode, self.score))
-                if self.set_summary:
-                    self.train_summary(self.score, self.episode)
-                    self.save_checkpoint()
-                self.score = 0
-                state = self.env.reset()
-                if self.episode % 1000 == 0:
-                    self.dqn_net.save("double_dqn_model/")
-
-            if len(self.memory) > self.batch_size:
-                return state
 
     def sampling(self):
         mini_batch = random.sample(self.memory, self.batch_size)
@@ -98,6 +75,39 @@ class DQNAgent(Agent):
             dones.append(transition[4])
 
         return states, actions, rewards, next_states, dones
+
+    def collect_transitions(self, start_state):
+        state = start_state
+        while True:
+            self.env.render()
+            self.step += 1
+            self.epsilon = 1 / (self.episode * 0.1 + 5)
+            action = self.get_action(state)
+            next_state, reward, done, _ = self.env.step(action)
+            self.score += reward
+            # use for CartPole-v1
+            # if done:
+            #     if self.score == 500:
+            #         reward = 1
+            #     else:
+            #         reward = -1
+            # else:
+            #     reward = 0
+            self.memory.append((state, action, reward, next_state, done))
+            state = next_state
+            if done:
+                self.episode += 1
+                print("Episode %s, Score %s." % (self.episode, self.score))
+                if self.set_summary:
+                    self.train_summary(self.score, self.episode)
+                    self.save_checkpoint()
+                self.score = 0
+                state = self.env.reset()
+                if self.episode % 100 == 0:
+                    self.dqn_net.save("dueling_dqn_model/")
+
+            if self.step > 1000:
+                return state
 
     def update(self):
         states, actions, rewards, next_states, dones = self.sampling()
@@ -132,18 +142,13 @@ class DQNAgent(Agent):
         state = self.env.reset()
         for _ in range(max_step):
             state = self.collect_transitions(state)
-            if self.step > self.maxlen/2:
-                self.update()
+            self.update()
 
 
 if __name__ == '__main__':
-    env = gym.make("CartPole-v1")
+    env = gym.make("SpaceInvaders-v0")
+
 
     # train
     agent = DQNAgent(env=env)
     agent.learn()
-
-    # play
-    # a2c = tf.keras.models.load_model("target_dqn_model/")
-    # agent = DQNAgent(env=env)
-    # agent.play()

@@ -50,8 +50,7 @@ class DQNAgent(Agent):
         self.score = 0
 
     def get_action(self, state):
-        q_value = self.dqn_net(np.array([state], dtype=np.float32))
-
+        q_value = self.dqn_net(np.array([state], dtype=np.float32))[0]
         if np.random.rand() < self.epsilon:
             action = np.random.choice(self.action_size)
         else:
